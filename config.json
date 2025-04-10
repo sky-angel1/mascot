@@ -1,0 +1,5 @@
+{
+  "weather_api_key": "860ab5f89e19a47c0a95cf5fc46f4026",
+  "weather_interval": 600,
+  "default_location": "Tokyo"
+}
