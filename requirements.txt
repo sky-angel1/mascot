@@ -1,0 +1,5 @@
+transformers
+deep-translator
+PyQt6
+requests
+torch
