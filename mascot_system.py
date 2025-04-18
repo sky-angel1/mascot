@@ -39,6 +39,11 @@ EXIT_KEYWORDS = ["exit", "bye", "quit", "ばいばい", "さようなら", "ま�
 WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/weather"
 WEATHER_KEYWORDS = ["天気", "weather", "気温"]
 
+# モデル・トークナイザは事前ロードしておくと高速
+MODEL_NAME = "facebook/blenderbot-400M-distill"
+tokenizer = BlenderbotTokenizer.from_pretrained(MODEL_NAME)
+model = BlenderbotForConditionalGeneration.from_pretrained(MODEL_NAME)
+
 
 class SignalEmitter(QObject):
     update_requested = pyqtSignal(str, str)  # (message_type, content)
@@ -149,7 +154,7 @@ class ChatInterface(QWidget):
         self.cached_weather_info = {}
 
         self.initUI()
-        self._load_history()
+        self._load_recent_conversation()
         self._setup_connections()
 
     def initUI(self):
@@ -262,29 +267,44 @@ class ChatInterface(QWidget):
 
     def _generate_response(self, user_input):
         try:
-            # 天気キーワード検出
             if any(kw in user_input for kw in WEATHER_KEYWORDS):
-                # 入力から地名を抽出
                 location = self._extract_location(user_input)
                 weather_info = self._get_weather(location)
                 self.emitter.update_requested.emit(
                     "new_message", f"[天気情報] {location}: {weather_info}"
                 )
                 return
-
-            # AI処理
-            translated = GoogleTranslator(source="ja", target="en").translate(
+            translated_input = GoogleTranslator(source="ja", target="en").translate(
                 user_input
             )
-            inputs = BlenderbotTokenizer.from_pretrained(
-                "facebook/blenderbot-400M-distill"
-            )(translated, return_tensors="pt")
-            response_ids = BlenderbotForConditionalGeneration.from_pretrained(
-                "facebook/blenderbot-400M-distill"
-            ).generate(**inputs)
-            response_en = BlenderbotTokenizer.from_pretrained(
-                "facebook/blenderbot-400M-distill"
-            ).decode(response_ids[0], skip_special_tokens=True)
+
+            # 会話履歴取得（直近2ターン）
+            history = self._load_recent_conversation(limit=2)
+
+            # 翻訳も適用
+            history_en = [
+                GoogleTranslator(source="ja", target="en").translate(line)
+                for line in history
+            ]
+            context = "\n".join(history_en + [translated_input])
+
+            # トークナイズ（長い場合は自動でカットされる）
+            inputs = tokenizer(
+                context, return_tensors="pt", truncation=True, max_length=128
+            )
+
+            # 🔥 生成パラメータ：ゆるく多様に
+            response_ids = model.generate(
+                **inputs,
+                max_length=128,
+                num_return_sequences=1,
+                do_sample=True,  # サンプリングON
+                top_k=50,  # 上位50単語から選ぶ
+                top_p=0.9,  # nucleus sampling
+                temperature=0.9,  # 多様性を上げる
+            )
+
+            response_en = tokenizer.decode(response_ids[0], skip_special_tokens=True)
             response = GoogleTranslator(source="en", target="ja").translate(response_en)
 
             self.emitter.update_requested.emit(
@@ -292,7 +312,7 @@ class ChatInterface(QWidget):
                 f"[{datetime.now().strftime('%H:%M')}] あなた\n👹: {user_input}\n"
                 f"[{datetime.now().strftime('%H:%M')}] マスコット\n🐱: {response}",
             )
-            # 会話履歴保存
+
             self._save_conversation(user_input, response)
 
         except Exception as e:
@@ -308,21 +328,22 @@ class ChatInterface(QWidget):
             self.chat_display.verticalScrollBar().maximum()
         )
 
-    def _load_history(self):
+    def _load_recent_conversation(self, limit=2):
         try:
             if CONVERSATION_HISTORY_FILE.exists():
                 with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
                     history = json.load(f)
-                    self.chat_display.setPlainText(
-                        "\n".join(
-                            [
-                                f"[{entry['time']}] あなた\n👹: {entry['input']}\n[{entry['time']}] マスコット\n🐱: {entry['response']}"
-                                for entry in history
-                            ]
-                        )
-                    )
+                    # 最新からlimitターン分（input+responseで1ターン）を取得
+                    recent_entries = history[-limit:]
+                    return [
+                        f"ユーザー: {entry['input']}\nマスコット: {entry['response']}"
+                        for entry in recent_entries
+                    ]
+            else:
+                return []
         except Exception as e:
-            print(f"履歴読み込みエラー: {e}")
+            print(f"履歴読み込みエラー（recent用）: {e}")
+            return []
 
     def _save_conversation(self, user_input, response):
         entry = {
