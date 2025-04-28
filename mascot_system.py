@@ -274,19 +274,14 @@ class ChatInterface(QWidget):
                     "new_message", f"[天気情報] {location}: {weather_info}"
                 )
                 return
+
             translated_input = GoogleTranslator(source="ja", target="en").translate(
                 user_input
             )
 
             # 会話履歴取得（直近2ターン）
-            history = self._load_recent_conversation(limit=2)
-
-            # 翻訳も適用
-            history_en = [
-                GoogleTranslator(source="ja", target="en").translate(line)
-                for line in history
-            ]
-            context = "\n".join(history_en + [translated_input])
+            history = self._load_recent_conversation(limit=2)  # 修正箇所
+            context = "\n".join(history + [translated_input])  # 修正箇所
 
             # トークナイズ（長い場合は自動でカットされる）
             inputs = tokenizer(
