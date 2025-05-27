@@ -8,9 +8,10 @@ import threading
 import re
 from pathlib import Path
 from datetime import datetime
-from transformers import BlenderbotTokenizer, BlenderbotForConditionalGeneration
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+from signal_emitter import SignalEmitter
 from deep_translator import GoogleTranslator
-from signal_emitter import SignalEmitter  # SignalEmitter をインポート
 
 try:
     from PyQt6.QtWidgets import (
@@ -29,7 +30,6 @@ try:
 except ImportError:
     PYQT_AVAILABLE = False
 
-# 設定定数
 BASE_DIR = Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "config.json"
 CONVERSATION_HISTORY_FILE = BASE_DIR / "conversation_history.json"
@@ -39,14 +39,15 @@ EXIT_KEYWORDS = ["exit", "bye", "quit", "ばいばい", "さようなら", "ま�
 WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/weather"
 WEATHER_KEYWORDS = ["天気", "weather", "気温"]
 
-# モデル・トークナイザは事前ロードしておくと高速
-MODEL_NAME = "facebook/blenderbot-400M-distill"
-tokenizer = BlenderbotTokenizer.from_pretrained(MODEL_NAME)
-model = BlenderbotForConditionalGeneration.from_pretrained(MODEL_NAME)
+
+MODEL_NAME = "rinna/japanese-gpt2-medium"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
+tokenizer.do_lower_case = True  # due to some bug of tokenizer config loading
+model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
 
 
 class SignalEmitter(QObject):
-    update_requested = pyqtSignal(str, str)  # (message_type, content)
+    update_requested = pyqtSignal(str, str)
 
 
 def load_config():
@@ -58,7 +59,6 @@ def load_config():
         return {}
 
 
-# アプリケーションの起動前に設定を読み込む例:
 config = load_config()
 weather_api_key = config.get("weather_api_key")
 if weather_api_key:
@@ -265,6 +265,8 @@ class ChatInterface(QWidget):
         except Exception as e:
             return f"天気情報の取得に失敗: {str(e)}"
 
+    # ChatInterface._generate_response のみ修正対象
+
     def _generate_response(self, user_input):
         try:
             if any(kw in user_input for kw in WEATHER_KEYWORDS):
@@ -275,32 +277,40 @@ class ChatInterface(QWidget):
                 )
                 return
 
-            translated_input = GoogleTranslator(source="ja", target="en").translate(
-                user_input
+            system_prompt = (
+                "あなたはフレンドリーで会話上手な日本語マスコットです。\n"
+                "以下にユーザーとの会話履歴があります。最後の質問に対して、親しみやすく、適切な長さで自然に応答してください。\n"
             )
 
-            # 会話履歴取得（直近2ターン）
-            history = self._load_recent_conversation(limit=2)  # 修正箇所
-            context = "\n".join(history + [translated_input])  # 修正箇所
+            history = self._load_recent_conversation(limit=2)
+            messages = []
+            for entry in history:
+                messages.append(f"ユーザー: {entry['input']}")
+                messages.append(f"マスコット: {entry['response']}")
+            messages.append(f"ユーザー: {user_input}")
 
-            # トークナイズ（長い場合は自動でカットされる）
+            prompt = system_prompt + "\n".join(messages) + "\nマスコット:"
+
             inputs = tokenizer(
-                context, return_tensors="pt", truncation=True, max_length=128
+                prompt, return_tensors="pt", truncation=True, max_length=512
             )
+            inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-            # 🔥 生成パラメータ：ゆるく多様に
-            response_ids = model.generate(
-                **inputs,
-                max_length=128,
-                num_return_sequences=1,
-                do_sample=True,  # サンプリングON
-                top_k=50,  # 上位50単語から選ぶ
-                top_p=0.9,  # nucleus sampling
-                temperature=0.9,  # 多様性を上げる
+            with torch.no_grad():
+                output = model.generate(
+                    **inputs,
+                    max_new_tokens=120,
+                    do_sample=True,
+                    temperature=0.7,
+                    top_p=0.9,
+                    top_k=50,
+                    repetition_penalty=1.3,
+                )
+
+            decoded = tokenizer.decode(output[0], skip_special_tokens=True)
+            response = (
+                decoded.split("マスコット:")[-1].strip().split("ユーザー:")[0].strip()
             )
-
-            response_en = tokenizer.decode(response_ids[0], skip_special_tokens=True)
-            response = GoogleTranslator(source="en", target="ja").translate(response_en)
 
             self.emitter.update_requested.emit(
                 "new_message",
@@ -328,12 +338,8 @@ class ChatInterface(QWidget):
             if CONVERSATION_HISTORY_FILE.exists():
                 with open(CONVERSATION_HISTORY_FILE, "r", encoding="utf-8") as f:
                     history = json.load(f)
-                    # 最新からlimitターン分（input+responseで1ターン）を取得
-                    recent_entries = history[-limit:]
-                    return [
-                        f"ユーザー: {entry['input']}\nマスコット: {entry['response']}"
-                        for entry in recent_entries
-                    ]
+                    recent_entries = history[-limit:]  # ← 最新limit件
+                    return recent_entries  # ← dictのまま返す
             else:
                 return []
         except Exception as e:
