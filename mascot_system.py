@@ -308,9 +308,10 @@ class ChatInterface(QWidget):
                 )
 
             decoded = tokenizer.decode(output[0], skip_special_tokens=True)
-            response = (
-                decoded.split("マスコット:")[-1].strip().split("ユーザー:")[0].strip()
-            )
+            response = re.split(
+                r"(ユーザー:|キャラクター:|キャラ:|ファンサイト:)",
+                decoded.split("マスコット:")[-1],
+            )[0].strip()
 
             self.emitter.update_requested.emit(
                 "new_message",
