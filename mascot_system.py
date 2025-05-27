@@ -292,14 +292,14 @@ class ChatInterface(QWidget):
             prompt = system_prompt + "\n".join(messages) + "\nマスコット:"
 
             inputs = tokenizer(
-                prompt, return_tensors="pt", truncation=True, max_length=512
+                prompt, return_tensors="pt", truncation=True, max_length=1024
             )
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
             with torch.no_grad():
                 output = model.generate(
                     **inputs,
-                    max_new_tokens=120,
+                    max_new_tokens=512,
                     do_sample=True,
                     temperature=0.7,
                     top_p=0.9,
