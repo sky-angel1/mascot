@@ -10,21 +10,24 @@ from pathlib import Path
 from datetime import datetime
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
-from signal_emitter import SignalEmitter
+
+""" from signal_emitter import SignalEmitter """
 from deep_translator import GoogleTranslator
 
+from PyQt6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QLineEdit,
+    QMessageBox,
+)
+from PyQt6.QtGui import QPixmap, QFont
+from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
+
 try:
-    from PyQt6.QtWidgets import (
-        QApplication,
-        QLabel,
-        QWidget,
-        QTextEdit,
-        QVBoxLayout,
-        QLineEdit,
-        QMessageBox,
-    )
-    from PyQt6.QtGui import QPixmap, QFont
-    from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
+    from PyQt6.QtWidgets import QApplication
 
     PYQT_AVAILABLE = True
 except ImportError:
@@ -41,7 +44,7 @@ WEATHER_KEYWORDS = ["天気", "weather", "気温"]
 
 
 MODEL_NAME = "rinna/japanese-gpt2-medium"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False, legacy=False)
 tokenizer.do_lower_case = True  # due to some bug of tokenizer config loading
 model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
 
@@ -78,7 +81,7 @@ class Mascot(QWidget):
             Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool  # 最前面表示を削除
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setFont(QFont("メイリオ", 9))
+        self.setFont(QFont("メイリオ", 12))
 
         # 画像リソースの読み込み
         self.expressions = {
@@ -104,10 +107,14 @@ class Mascot(QWidget):
         self.blink_timer.start(15000)
 
     def _random_move(self):
-        screen = QApplication.primaryScreen().availableGeometry()
-        new_x = random.randint(0, screen.width() - self.width())
-        new_y = random.randint(0, screen.height() - self.height())
-        self.move(new_x, new_y)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            rect = screen.availableGeometry()
+            new_x = random.randint(rect.x(), rect.width() - self.width())
+            new_y = random.randint(rect.y(), rect.height() - self.height())
+            self.move(new_x, new_y)
+        else:
+            print("スクリーン情報が取得できませんでした。移動をスキップします。")
 
     def _trigger_blink(self):
         if self._current_expression == "normal":
@@ -159,7 +166,7 @@ class ChatInterface(QWidget):
 
     def initUI(self):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)  # 最前面表示を削除
-        self.setMinimumSize(400, 500)
+        self.setMinimumSize(600, 800)
 
         layout = QVBoxLayout()
         self.title_bar = QLabel(" Virtual Mascot Chat ")
@@ -189,13 +196,13 @@ class ChatInterface(QWidget):
         elif msg_type == "error":
             QMessageBox.critical(self, "エラー", content)
 
-    def _start_move(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.drag_pos = event.globalPosition().toPoint() - self.pos()
+    def _start_move(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton:
+            self.drag_pos = ev.globalPosition().toPoint() - self.pos()
 
-    def _move_window(self, event):
-        if event.buttons() == Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self.drag_pos)
+    def _move_window(self, ev):
+        if ev.buttons() == Qt.MouseButton.LeftButton:
+            self.move(ev.globalPosition().toPoint() - self.drag_pos)
 
     def _process_input(self):
         user_input = self.input_field.text().strip()
@@ -278,7 +285,7 @@ class ChatInterface(QWidget):
                 return
 
             system_prompt = (
-                "あなたはフレンドリーで会話上手な日本語マスコットです。\n"
+                "あなたはフレンドリーで会話上手な女性の日本語マスコットです。\n"
                 "以下にユーザーとの会話履歴があります。最後の質問に対して、親しみやすく、適切な長さで自然に応答してください。\n"
             )
 
@@ -292,14 +299,14 @@ class ChatInterface(QWidget):
             prompt = system_prompt + "\n".join(messages) + "\nマスコット:"
 
             inputs = tokenizer(
-                prompt, return_tensors="pt", truncation=True, max_length=1024
+                prompt, return_tensors="pt", truncation=True, max_length=256
             )
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
             with torch.no_grad():
                 output = model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=256,
                     do_sample=True,
                     temperature=0.7,
                     top_p=0.9,
@@ -309,7 +316,7 @@ class ChatInterface(QWidget):
 
             decoded = tokenizer.decode(output[0], skip_special_tokens=True)
             response = re.split(
-                r"(ユーザー:|キャラクター:|キャラ:|ファンサイト:)",
+                r"(:|キャラクター:|キャラ:|ファンサイト:|ファン:|管理人:|マスコット:|プレイヤー:)",
                 decoded.split("マスコット:")[-1],
             )[0].strip()
 
@@ -330,9 +337,9 @@ class ChatInterface(QWidget):
             current = current[-MAX_HISTORY_ENTRIES // 2 :]
         current.append(message)
         self.chat_display.setPlainText("\n".join(current))
-        self.chat_display.verticalScrollBar().setValue(
-            self.chat_display.verticalScrollBar().maximum()
-        )
+        scrollbar = self.chat_display.verticalScrollBar()
+        if scrollbar is not None:
+            scrollbar.setValue(scrollbar.maximum())
 
     def _load_recent_conversation(self, limit=2):
         try:
