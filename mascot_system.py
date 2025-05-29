@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
+from transformers.pipelines import pipeline
 
 """ from signal_emitter import SignalEmitter """
 from deep_translator import GoogleTranslator
@@ -42,9 +43,21 @@ EXIT_KEYWORDS = ["exit", "bye", "quit", "ばいばい", "さようなら", "ま�
 WEATHER_API_URL = "https://api.openweathermap.org/data/2.5/weather"
 WEATHER_KEYWORDS = ["天気", "weather", "気温"]
 
+pipe = pipeline(
+    "text-generation",
+    model="rinna/japanese-gpt-neox-3.6b-instruction-ppo",
+    device="cpu",  # または "cpu"
+)
+system_prompt = (
+    "あなたは少し冷たそうに見えるけど実は優しい女性の日本語マスコットです。\n"
+    "ユーザーの発言に対して、カジュアルで一文程度の自然な返答をしてください。\n"
+    "ユーザー: マシーンラーニングについての詩を書いてください。\n"
+    "マスコット:"
+)
+result = pipe(system_prompt, return_full_text=False, max_new_tokens=256)
 
-MODEL_NAME = "rinna/japanese-gpt2-medium"
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False, legacy=False)
+MODEL_NAME = "rinna/japanese-gpt-neox-3.6b-instruction-ppo"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=False, legacy=true)
 tokenizer.do_lower_case = True  # due to some bug of tokenizer config loading
 model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
 
@@ -166,7 +179,7 @@ class ChatInterface(QWidget):
 
     def initUI(self):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)  # 最前面表示を削除
-        self.setMinimumSize(600, 800)
+        self.setMinimumSize(500, 600)
 
         layout = QVBoxLayout()
         self.title_bar = QLabel(" Virtual Mascot Chat ")
@@ -284,9 +297,10 @@ class ChatInterface(QWidget):
                 )
                 return
 
-            system_prompt = (
-                "あなたはフレンドリーで会話上手な女性の日本語マスコットです。\n"
-                "以下にユーザーとの会話履歴があります。最後の質問に対して、親しみやすく、適切な長さで自然に応答してください。\n"
+            pipe_result = pipe(
+                system_prompt,
+                return_full_text=False,
+                max_new_tokens=80,
             )
 
             history = self._load_recent_conversation(limit=2)
@@ -298,26 +312,35 @@ class ChatInterface(QWidget):
 
             prompt = system_prompt + "\n".join(messages) + "\nマスコット:"
 
-            inputs = tokenizer(
-                prompt, return_tensors="pt", truncation=True, max_length=256
+            # pipe expects a list of messages or a prompt string
+            pipe_result = pipe(
+                [{"role": "user", "content": prompt}],
+                return_full_text=False,
+                max_new_tokens=80,
             )
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
+            if pipe_result and hasattr(pipe_result, "__iter__"):
+                outputs = list(pipe_result)
+            else:
+                outputs = []
+            from typing import cast, Dict, Any
 
-            with torch.no_grad():
-                output = model.generate(
-                    **inputs,
-                    max_new_tokens=256,
-                    do_sample=True,
-                    temperature=0.7,
-                    top_p=0.9,
-                    top_k=50,
-                    repetition_penalty=1.3,
-                )
+            if (
+                outputs
+                and isinstance(outputs[0], dict)
+                and "generated_text" in outputs[0]
+            ):
+                output_dict = cast(Dict[str, Any], outputs[0])
+                decoded = output_dict["generated_text"]
+            else:
+                decoded = ""
 
-            decoded = tokenizer.decode(output[0], skip_special_tokens=True)
+            # 「マスコット:」の後ろを取り出し、そこから「発言者名:」パターンで分割して前半だけ取得
+            decoded_str = str(decoded)
+            mascot_split = decoded_str.split("マスコット:")
+            target_text = mascot_split[-1] if len(mascot_split) > 1 else decoded_str
             response = re.split(
-                r"(:|キャラクター:|キャラ:|ファンサイト:|ファン:|管理人:|マスコット:|プレイヤー:)",
-                decoded.split("マスコット:")[-1],
+                r"(?:\n)?(ユーザー|マスコット|キャラクター|キャラ|ファンサイト|ファン|管理人|プレイヤー):",
+                target_text,
             )[0].strip()
 
             self.emitter.update_requested.emit(
